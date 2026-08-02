@@ -1,13 +1,14 @@
-import asyncio
 import os
 import secrets
-from collections import defaultdict
-from typing import DefaultDict, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, validator
+from starlette.concurrency import run_in_threadpool
+
+from app.database import ChatDatabase, DatabaseUnavailable
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Always load this project's .env, regardless of uvicorn's working directory.
@@ -22,10 +23,7 @@ MAX_HISTORY_MESSAGES = max(2, int(os.getenv("MAX_HISTORY_MESSAGES", "20")))
 DEFAULT_SYSTEM_PROMPT = "你是一个友善、简洁、适合儿童交流的 AI 玩具伙伴。"
 
 app = FastAPI(title="AI Toy API", version="0.1.0")
-
-# This is intentionally simple for an MVP. Use Redis/database in production.
-conversations: DefaultDict[str, List[Dict[str, str]]] = defaultdict(list)
-conversation_lock = asyncio.Lock()
+database = ChatDatabase()
 
 
 class ChatRequest(BaseModel):
@@ -67,6 +65,25 @@ def conversation_key(request: ChatRequest) -> str:
     return request.conversation_id or request.device_id
 
 
+async def database_operation(operation, *args):
+    try:
+        return await run_in_threadpool(operation, *args)
+    except DatabaseUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="MySQL is unavailable. Check MYSQL_* settings and database connectivity.",
+        )
+
+
+@app.on_event("startup")
+async def initialize_database() -> None:
+    """Fail fast if persistent conversation memory cannot be initialized."""
+    try:
+        await run_in_threadpool(database.ensure_schema)
+    except DatabaseUnavailable as error:
+        raise RuntimeError("MySQL initialization failed") from error
+
+
 async def ask_model(messages: List[Dict[str, str]], temperature: float) -> str:
     if not DEEPSEEK_API_KEY:
         raise HTTPException(status_code=503, detail="DeepSeek is not configured")
@@ -97,7 +114,13 @@ async def ask_model(messages: List[Dict[str, str]], temperature: float) -> str:
 
 @app.get("/v1/health")
 async def health():
-    return {"status": "ok", "provider": "deepseek", "provider_configured": bool(DEEPSEEK_API_KEY)}
+    return {
+        "status": "ok",
+        "provider": "deepseek",
+        "provider_configured": bool(DEEPSEEK_API_KEY),
+        "memory_store": "mysql",
+        "mysql_configured": database.configured,
+    }
 
 
 @app.post("/v1/chat/completions", response_model=ChatResponse, dependencies=[Depends(require_token)])
@@ -105,24 +128,19 @@ async def chat(request: ChatRequest):
     key = conversation_key(request)
     system_prompt = request.system_prompt or DEFAULT_SYSTEM_PROMPT
 
-    # The lock keeps a single device's history consistent when requests overlap.
-    async with conversation_lock:
-        history = list(conversations[key])
-        messages = [{"role": "system", "content": system_prompt}] + history + [
-            {"role": "user", "content": request.message}
-        ]
-        reply = await ask_model(messages, request.temperature)
-        conversations[key].extend([
-            {"role": "user", "content": request.message},
-            {"role": "assistant", "content": reply},
-        ])
-        conversations[key] = conversations[key][-MAX_HISTORY_MESSAGES:]
+    history = await database_operation(
+        database.get_history, request.device_id, key, MAX_HISTORY_MESSAGES
+    )
+    messages = [{"role": "system", "content": system_prompt}] + history + [
+        {"role": "user", "content": request.message}
+    ]
+    reply = await ask_model(messages, request.temperature)
+    await database_operation(database.save_turn, request.device_id, key, request.message, reply)
 
     return ChatResponse(conversation_id=key, reply=reply, model=DEEPSEEK_MODEL)
 
 
 @app.delete("/v1/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT,
             dependencies=[Depends(require_token)])
-async def clear_conversation(conversation_id: str):
-    async with conversation_lock:
-        conversations.pop(conversation_id, None)
+async def clear_conversation(conversation_id: str, device_id: str = Query(..., min_length=1, max_length=100)):
+    await database_operation(database.clear_conversation, device_id.strip(), conversation_id)
