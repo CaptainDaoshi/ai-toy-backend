@@ -1,14 +1,16 @@
 import json
 import os
 import secrets
+from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, validator
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.cors import CORSMiddleware
 
 from app.database import ChatDatabase, DatabaseUnavailable, DeviceModeConflict
 from app.security import verify_device_token
@@ -23,6 +25,14 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
 TOY_API_TOKEN = os.getenv("TOY_API_TOKEN", "")
 DEVICE_AUTH_SECRET = os.getenv("DEVICE_AUTH_SECRET", "")
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
 WORKING_MEMORY_MESSAGES = max(2, int(os.getenv("WORKING_MEMORY_MESSAGES", "8")))
 MEMORY_CONSOLIDATION_BATCH_MESSAGES = max(
     2, int(os.getenv("MEMORY_CONSOLIDATION_BATCH_MESSAGES", "12"))
@@ -38,6 +48,10 @@ MEMORY_MAX_BATCHES_PER_REQUEST = max(
 MODEL_CONTEXT_MAX_TOKENS = max(8192, int(os.getenv("MODEL_CONTEXT_MAX_TOKENS", "32768")))
 MODEL_MAX_OUTPUT_TOKENS = max(256, int(os.getenv("MODEL_MAX_OUTPUT_TOKENS", "1200")))
 CONTEXT_SAFETY_TOKENS = max(256, int(os.getenv("CONTEXT_SAFETY_TOKENS", "1024")))
+EMOTION_MAX_OUTPUT_TOKENS = max(128, int(os.getenv("EMOTION_MAX_OUTPUT_TOKENS", "256")))
+JSON_EMPTY_RESPONSE_RETRIES = max(
+    0, min(2, int(os.getenv("JSON_EMPTY_RESPONSE_RETRIES", "1")))
+)
 INPUT_CONTEXT_TOKEN_BUDGET = max(
     2048, MODEL_CONTEXT_MAX_TOKENS - MODEL_MAX_OUTPUT_TOKENS - CONTEXT_SAFETY_TOKENS
 )
@@ -71,6 +85,13 @@ MEMORY_CONSOLIDATION_PROMPT = """你负责把 AI 玩具的旧对话巩固成长�
 这不是要直接回复用户，而是给另一个模型的内部记忆。"""
 
 app = FastAPI(title="AI Toy API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Device-Token"],
+)
 database = ChatDatabase()
 
 
@@ -106,6 +127,27 @@ class ChatResponse(BaseModel):
     model: str
     response_mode: ResponseMode
     emotion: Optional[str] = None
+
+
+class DeviceProfileResponse(BaseModel):
+    device_id: str
+    initialized: bool
+    response_mode: Optional[ResponseMode] = None
+
+
+class StoredMessageResponse(BaseModel):
+    id: int
+    role: str
+    content: str
+    created_at: datetime
+
+
+class ConversationHistoryResponse(BaseModel):
+    device_id: str
+    conversation_id: str
+    messages: List[StoredMessageResponse]
+    has_more: bool
+    next_before_id: Optional[int] = None
 
 
 def require_token(authorization: Optional[str] = Header(None)) -> None:
@@ -152,6 +194,7 @@ async def ask_model(
     temperature: float,
     max_tokens: Optional[int] = None,
     json_output: bool = False,
+    empty_fallback: Optional[str] = None,
 ) -> str:
     if not DEEPSEEK_API_KEY:
         raise HTTPException(status_code=503, detail="DeepSeek is not configured")
@@ -160,27 +203,54 @@ async def ask_model(
     payload["max_tokens"] = max_tokens if max_tokens is not None else MODEL_MAX_OUTPUT_TOKENS
     if json_output:
         payload["response_format"] = {"type": "json_object"}
+        # DeepSeek thinking is enabled by default and its reasoning tokens count toward max_tokens.
+        # A tiny classification response should skip reasoning so the final JSON is not starved.
+        payload["thinking"] = {"type": "disabled"}
     headers = {"Authorization": "Bearer " + DEEPSEEK_API_KEY, "Content-Type": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(DEEPSEEK_BASE_URL + "/chat/completions", json=payload, headers=headers)
-    except httpx.RequestError:
-        raise HTTPException(
-            status_code=503,
-            detail="Cannot connect to DeepSeek. Check outbound HTTPS (TCP 443) or HTTPS_PROXY.",
-        )
+    attempts = 1 + (JSON_EMPTY_RESPONSE_RETRIES if json_output else 0)
+    for attempt in range(attempts):
+        request_payload = dict(payload)
+        if attempt > 0:
+            retry_instruction = (
+                "上一次 JSON 输出为空。现在必须立即返回非空 JSON；"
+                "示例：{\"emotion\":\"平静\"}。"
+            )
+            retry_messages = [dict(message) for message in messages]
+            if retry_messages and retry_messages[0].get("role") == "system":
+                retry_messages[0]["content"] += "\n" + retry_instruction
+            else:
+                retry_messages.insert(0, {"role": "system", "content": retry_instruction})
+            request_payload["messages"] = retry_messages
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    DEEPSEEK_BASE_URL + "/chat/completions",
+                    json=request_payload,
+                    headers=headers,
+                )
+        except httpx.RequestError:
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot connect to DeepSeek. Check outbound HTTPS (TCP 443) or HTTPS_PROXY.",
+            )
 
-    if response.status_code >= 400:
-        # Do not pass provider error text through: it may contain operational details.
-        raise HTTPException(status_code=502, detail="AI provider returned an error")
+        if response.status_code >= 400:
+            # Do not pass provider error text through: it may contain operational details.
+            raise HTTPException(status_code=502, detail="AI provider returned an error")
 
-    try:
-        reply = response.json()["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=502, detail="AI provider returned an invalid response")
-    if not reply:
-        raise HTTPException(status_code=502, detail="AI provider returned an empty response")
-    return reply
+        try:
+            content = response.json()["choices"][0]["message"].get("content")
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+            raise HTTPException(status_code=502, detail="AI provider returned an invalid response")
+        if content is not None and not isinstance(content, str):
+            raise HTTPException(status_code=502, detail="AI provider returned an invalid response")
+        reply = (content or "").strip()
+        if reply:
+            return reply
+
+    if empty_fallback is not None:
+        return empty_fallback
+    raise HTTPException(status_code=502, detail="AI provider returned an empty response")
 
 
 def estimate_text_tokens(text: str) -> int:
@@ -353,6 +423,62 @@ async def health():
     }
 
 
+@app.get(
+    "/v1/devices/{device_id}/profile",
+    response_model=DeviceProfileResponse,
+    dependencies=[Depends(require_token)],
+)
+async def device_profile(
+    device_id: str = Path(..., min_length=1, max_length=100),
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+):
+    """Expose only the immutable response-mode binding needed by a device client."""
+    normalized_device_id = device_id.strip()
+    if not normalized_device_id:
+        raise HTTPException(status_code=422, detail="device_id must not be blank")
+    require_device_token(normalized_device_id, x_device_token)
+    stored_mode = await database_operation(database.get_response_mode, normalized_device_id)
+    return DeviceProfileResponse(
+        device_id=normalized_device_id,
+        initialized=stored_mode is not None,
+        response_mode=ResponseMode(stored_mode) if stored_mode is not None else None,
+    )
+
+
+@app.get(
+    "/v1/conversations/{conversation_id}/messages",
+    response_model=ConversationHistoryResponse,
+    dependencies=[Depends(require_token)],
+)
+async def conversation_messages(
+    conversation_id: str = Path(..., min_length=1, max_length=100),
+    device_id: str = Query(..., min_length=1, max_length=100),
+    limit: int = Query(50, ge=1, le=100),
+    before_id: Optional[int] = Query(None, ge=1),
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+):
+    """Return authenticated chat history for reconnecting test clients."""
+    normalized_device_id = device_id.strip()
+    normalized_conversation_id = conversation_id.strip()
+    if not normalized_device_id or not normalized_conversation_id:
+        raise HTTPException(status_code=422, detail="device_id and conversation_id must not be blank")
+    require_device_token(normalized_device_id, x_device_token)
+    messages, has_more = await database_operation(
+        database.get_conversation_messages,
+        normalized_device_id,
+        normalized_conversation_id,
+        limit,
+        before_id,
+    )
+    return ConversationHistoryResponse(
+        device_id=normalized_device_id,
+        conversation_id=normalized_conversation_id,
+        messages=messages,
+        has_more=has_more,
+        next_before_id=int(messages[0]["id"]) if has_more and messages else None,
+    )
+
+
 @app.post("/v1/chat/completions", response_model=ChatResponse, dependencies=[Depends(require_token)])
 async def chat(request: ChatRequest, x_device_token: Optional[str] = Header(None, alias="X-Device-Token")):
     require_device_token(request.device_id, x_device_token)
@@ -384,8 +510,13 @@ async def chat(request: ChatRequest, x_device_token: Optional[str] = Header(None
     reply = await ask_model(
         messages,
         temperature=0.1 if response_mode == ResponseMode.emotion else request.temperature,
-        max_tokens=40 if response_mode == ResponseMode.emotion else None,
+        max_tokens=EMOTION_MAX_OUTPUT_TOKENS if response_mode == ResponseMode.emotion else None,
         json_output=response_mode == ResponseMode.emotion,
+        empty_fallback=(
+            json.dumps({"emotion": "平静"}, ensure_ascii=False)
+            if response_mode == ResponseMode.emotion
+            else None
+        ),
     )
     emotion = None
     if response_mode == ResponseMode.emotion:

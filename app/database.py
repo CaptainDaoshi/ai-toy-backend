@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import pymysql
 from pymysql.cursors import DictCursor
@@ -122,6 +122,50 @@ class ChatDatabase:
                 return list(cursor.fetchall())
         except pymysql.MySQLError as error:
             raise DatabaseUnavailable("MySQL query failed") from error
+        finally:
+            connection.close()
+
+    def get_conversation_messages(
+        self,
+        device_id: str,
+        conversation_id: str,
+        limit: int,
+        before_id: Optional[int] = None,
+    ) -> Tuple[List[Dict[str, object]], bool]:
+        """Return a newest-first database page in chronological display order."""
+        self.ensure_schema()
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                if before_id is None:
+                    cursor.execute(
+                        """
+                        SELECT id, role, content, created_at
+                        FROM chat_messages
+                        WHERE device_id = %s AND conversation_id = %s
+                        ORDER BY id DESC
+                        LIMIT %s
+                        """,
+                        (device_id, conversation_id, limit + 1),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id, role, content, created_at
+                        FROM chat_messages
+                        WHERE device_id = %s AND conversation_id = %s AND id < %s
+                        ORDER BY id DESC
+                        LIMIT %s
+                        """,
+                        (device_id, conversation_id, before_id, limit + 1),
+                    )
+                rows = list(cursor.fetchall())
+                has_more = len(rows) > limit
+                rows = rows[:limit]
+                rows.reverse()
+                return rows, has_more
+        except pymysql.MySQLError as error:
+            raise DatabaseUnavailable("MySQL conversation history query failed") from error
         finally:
             connection.close()
 

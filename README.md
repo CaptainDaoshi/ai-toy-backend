@@ -2,7 +2,7 @@
 
 面向实体 AI 玩具的最小后端：设备上传文字，服务端保存会话上下文并转发给 DeepSeek。模型密钥只存在于服务器，设备端不需要、也不应该保存它。
 
-## 启动
+## 启动后端
 
 需要 Python 3.7+：
 
@@ -16,6 +16,21 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 打开 `http://127.0.0.1:8000/docs` 可试用交互式 API 文档。
+
+## 启动测试前端
+
+项目包含一个本地“呆呆控制台”，可检查后端状态、读取设备的固定回复模式、发送聊天、查看原始 JSON 并清空会话。需要 Node.js 22.13+：
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+生成
+X-dEVICE-TOKEN
+python scripts/generate_device_token.py toy-00X
+
+打开命令行显示的地址（默认 `http://localhost:3000`），填入 `device_id` 和 `X-Device-Token` 后点击“检查连接”。控制台会读取该会话最近 50 条历史记录，并可继续向前翻页。勾选“在这台电脑上记住”后，设备令牌会按 `device_id` 保存在当前浏览器；请只在个人电脑上使用，也可随时点击“忘记令牌”。若修改前端端口或域名，请同步更新 `.env` 的 `CORS_ALLOW_ORIGINS` 并重启后端。
 
 若收到 `503 DeepSeek is not configured`，说明运行中的服务没有读取到密钥。确认项目根目录下存在名为 `.env` 的文件（不是 `.env.example` 或 `.env.txt`），其中有一行 `DEEPSEEK_API_KEY=你的真实密钥`，保存后重启 uvicorn。不要把密钥发给我，也不要提交 `.env` 到 Git。
 
@@ -83,6 +98,8 @@ X-Device-Token: <该 device_id 对应的设备令牌>
 - `normal`：正常聊天文本。
 - `emotion`：只返回 `平静、开心、生气、烦恼、难过、害羞、好奇、惊讶、困倦、委屈` 中的一个标签，响应的 `emotion` 字段会给出同一个值。
 
+纯情绪分类会关闭 DeepSeek 思考模式并预留独立输出预算，避免推理 token 用尽后没有最终 JSON。若 DeepSeek 的 JSON 模式偶发返回空内容，服务会自动重试一次；仍为空时安全降级为 `平静`，不会因空响应向设备返回 502。可通过 `EMOTION_MAX_OUTPUT_TOKENS` 和 `JSON_EMPTY_RESPONSE_RETRIES` 调整。
+
 选择只会在模型成功回复后，和首轮聊天记录一起按 `device_id` 原子写入 `device_profiles` 表。失败请求不会锁定模式。此后请求可以不再传 `response_mode`，服务会自动沿用；如果显式传入另一模式，服务返回 `409 Conflict`，不会切换。`conversation_id` 的变化不会改变设备模式。
 
 ### 每设备鉴权
@@ -100,6 +117,8 @@ python scripts/generate_device_token.py device-1
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/v1/health` | 健康检查，不泄露配置 |
+| GET | `/v1/devices/{device_id}/profile` | 查询设备是否已锁定回复模式 |
+| GET | `/v1/conversations/{conversation_id}/messages?device_id=...` | 分页读取指定设备的历史消息 |
 | POST | `/v1/chat/completions` | 发送一句话并取得回复 |
 | DELETE | `/v1/conversations/{conversation_id}?device_id=...` | 清除指定设备的一段会话记忆 |
 
