@@ -1,8 +1,10 @@
 import asyncio
+from array import array
 import unittest
 from unittest.mock import patch
 
 from app.main import ask_model
+from app.tts import SpeechSynthesisUnavailable, synthesize_speech_wav
 
 
 class FakeResponse:
@@ -77,6 +79,43 @@ class AskModelEmotionTests(unittest.TestCase):
 
         self.assertEqual(reply, '{"emotion":"平静"}')
         self.assertEqual(len(client.payloads), 2)
+
+
+class SpeechSynthesisTests(unittest.TestCase):
+    @patch("app.tts.miniaudio.mp3_read_s16")
+    @patch("app.tts.edge_tts.Communicate")
+    def test_returns_pcm_wav(self, communicate, decode):
+        class FakeCommunicate:
+            async def stream(self):
+                yield {"type": "audio", "data": b"fake-mp3"}
+
+        communicate.return_value = FakeCommunicate()
+        decode.return_value = type(
+            "Decoded",
+            (),
+            {
+                "nchannels": 1,
+                "sample_width": 2,
+                "sample_rate": 24000,
+                "samples": array("h", [0, 100, -100, 0]),
+            },
+        )()
+
+        wav_data = asyncio.run(synthesize_speech_wav("你好"))
+
+        self.assertEqual(wav_data[:4], b"RIFF")
+        self.assertEqual(wav_data[8:12], b"WAVE")
+
+    @patch("app.tts.edge_tts.Communicate")
+    def test_rejects_empty_audio(self, communicate):
+        class FakeCommunicate:
+            async def stream(self):
+                if False:
+                    yield None
+
+        communicate.return_value = FakeCommunicate()
+        with self.assertRaises(SpeechSynthesisUnavailable):
+            asyncio.run(synthesize_speech_wav("你好"))
 
 
 if __name__ == "__main__":

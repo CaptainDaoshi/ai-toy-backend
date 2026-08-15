@@ -7,13 +7,14 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, Field, validator
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.cors import CORSMiddleware
 
 from app.database import ChatDatabase, DatabaseUnavailable, DeviceModeConflict
 from app.security import verify_device_token
+from app.tts import SpeechSynthesisUnavailable, synthesize_speech_wav
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Always load this project's .env, regardless of uvicorn's working directory.
@@ -52,6 +53,8 @@ EMOTION_MAX_OUTPUT_TOKENS = max(128, int(os.getenv("EMOTION_MAX_OUTPUT_TOKENS", 
 JSON_EMPTY_RESPONSE_RETRIES = max(
     0, min(2, int(os.getenv("JSON_EMPTY_RESPONSE_RETRIES", "1")))
 )
+TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
+TTS_RATE = os.getenv("TTS_RATE", "+0%")
 INPUT_CONTEXT_TOKEN_BUDGET = max(
     2048, MODEL_CONTEXT_MAX_TOKENS - MODEL_MAX_OUTPUT_TOKENS - CONTEXT_SAFETY_TOKENS
 )
@@ -127,6 +130,17 @@ class ChatResponse(BaseModel):
     model: str
     response_mode: ResponseMode
     emotion: Optional[str] = None
+
+
+class SpeechRequest(BaseModel):
+    device_id: str = Field(..., min_length=1, max_length=100)
+    text: str = Field(..., min_length=1, max_length=1000)
+
+    @validator("device_id", "text")
+    def strip_speech_fields(cls, value):
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value.strip()
 
 
 class DeviceProfileResponse(BaseModel):
@@ -543,6 +557,25 @@ async def chat(request: ChatRequest, x_device_token: Optional[str] = Header(None
         model=DEEPSEEK_MODEL,
         response_mode=response_mode,
         emotion=emotion,
+    )
+
+
+@app.post("/v1/speech", dependencies=[Depends(require_token)])
+async def speech(
+    request: SpeechRequest,
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+):
+    """Return a short reply as 16-bit mono PCM WAV for the ESP32."""
+    require_device_token(request.device_id, x_device_token)
+    try:
+        wav_data = await synthesize_speech_wav(request.text, TTS_VOICE, TTS_RATE)
+    except SpeechSynthesisUnavailable:
+        raise HTTPException(status_code=503, detail="Speech synthesis is unavailable")
+
+    return Response(
+        content=wav_data,
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-store"},
     )
 
 

@@ -17,6 +17,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 打开 `http://127.0.0.1:8000/docs` 可试用交互式 API 文档。
 
+## ESP32-S3 固件测试
+
+ESP32-S3 的 2.4 GHz Wi-Fi、MAX98357A I2S 语音和板载 RGB 状态灯测试工程位于 [`firmware/led_blink_test`](firmware/led_blink_test)。由于当前仓库路径含中文，请按该目录 README 的说明使用 `idf.ps1` 配置、编译和烧录。
+
 ## 启动测试前端
 
 项目包含一个本地“呆呆控制台”，可检查后端状态、读取设备的固定回复模式、发送聊天、查看原始 JSON 并清空会话。需要 Node.js 22.13+：
@@ -68,6 +72,10 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+语音接口依赖联网访问 Edge TTS。若聊天正常但 `/v1/speech` 返回 503，请检查后端主机的 HTTPS 出站网络；该测试实现适合开发联调，正式产品建议换成带服务协议和配额保障的 TTS 提供方。
+
+项目仍兼容 Python 3.7，因此 `requirements.txt` 将 `miniaudio` 固定为 `1.59`。这是带有 CPython 3.7 Windows 预编译 wheel 的版本；不要直接安装最新版，否则 pip 会尝试本地编译并要求 Microsoft Visual C++ Build Tools。
+
 同一 `device_id` 会默认延续记忆；若设备使用 `conversation_id`，记忆会按设备和会话 ID 隔离。删除记忆时必须带上设备 ID，例如：`DELETE /v1/conversations/toy-001?device_id=toy-001`。
 
 ## 无法连接 DeepSeek
@@ -89,7 +97,7 @@ X-Device-Token: <该 device_id 对应的设备令牌>
 }
 ```
 
-响应中的 `reply` 可直接交给设备的 TTS（文字转语音）模块朗读。相同的 `device_id` 会自动延续对话；若要隔离多个孩子或角色，可额外提供 `conversation_id`。
+响应中的 `reply` 可继续提交到 `POST /v1/speech`，取得适合 ESP32 I2S 播放的 16 位、单声道 PCM WAV。当前测试实现使用联网的 Edge TTS，默认中文音色为 `zh-CN-XiaoxiaoNeural`，再由后端解码成设备可直接播放的 WAV；可用 `.env` 的 `TTS_VOICE` 和 `TTS_RATE` 调整音色与语速。相同的 `device_id` 会自动延续对话；若要隔离多个孩子或角色，可额外提供 `conversation_id`。
 
 ### 设备输出模式
 
@@ -120,6 +128,7 @@ python scripts/generate_device_token.py device-1
 | GET | `/v1/devices/{device_id}/profile` | 查询设备是否已锁定回复模式 |
 | GET | `/v1/conversations/{conversation_id}/messages?device_id=...` | 分页读取指定设备的历史消息 |
 | POST | `/v1/chat/completions` | 发送一句话并取得回复 |
+| POST | `/v1/speech` | 把回复文字合成为单声道 PCM WAV |
 | DELETE | `/v1/conversations/{conversation_id}?device_id=...` | 清除指定设备的一段会话记忆 |
 
 `/v1/chat/completions` 可选字段：`conversation_id`、`system_prompt`（角色设定）、`temperature`（0–2）。服务端会限制单次输入为 2,000 个字符，保留最近 20 条历史消息。

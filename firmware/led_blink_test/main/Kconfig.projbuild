@@ -1,0 +1,110 @@
+menu "On-board RGB LED Test Configuration"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    config LED_TEST_RGB_GPIO
+        int "WS2812B data GPIO"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 48
+        help
+            GPIO connected to the on-board WS2812B data input. The schematic
+            and supplied Arduino examples for this board both use GPIO48.
+
+    config LED_TEST_BRIGHTNESS
+        int "RGB brightness (1-255)"
+        range 1 255
+        default 32
+        help
+            Per-channel brightness used for red, green, and blue. A moderate
+            default reduces glare and current consumption during testing.
+
+endmenu
+
+menu "MAX98357A Audio Test Configuration"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    config AUDIO_TEST_DOUT_GPIO
+        int "I2S data output GPIO (DIN)"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 7
+        help
+            GPIO connected to the MAX98357A DIN input.
+
+    config AUDIO_TEST_BCLK_GPIO
+        int "I2S bit clock GPIO (BCLK)"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 15
+        help
+            GPIO connected to the MAX98357A BCLK input.
+
+    config AUDIO_TEST_LRCLK_GPIO
+        int "I2S left/right clock GPIO (LRC/WS)"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 16
+        help
+            GPIO connected to the MAX98357A LRC, LRCLK, or WS input.
+
+endmenu
+
+menu "Wi-Fi Test Configuration"
+
+    config WIFI_TEST_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            Network name for the ESP32-S3 station to connect to.
+
+    config WIFI_TEST_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            WPA/WPA2/WPA3 password. Leave empty only for an open network.
+
+    config WIFI_TEST_MAXIMUM_RETRY
+        int "Maximum connection retries"
+        range 1 100
+        default 10
+        help
+            Number of reconnection attempts before reporting a failed test.
+
+endmenu
+
+menu "Backend API and Speech Test Configuration"
+
+    config BACKEND_BASE_URL
+        string "Backend base URL (no trailing slash)"
+        default "https://68mn1ot67133.vicp.fun"
+        help
+            HTTPS origin exposed by the intranet tunnel. Do not include a
+            trailing slash because the firmware appends API paths.
+
+    config BACKEND_DEVICE_ID
+        string "Device ID"
+        default "esp32-s3-001"
+        help
+            Stable identifier sent in both chat and speech requests. The
+            X-Device-Token must have been generated for this exact value.
+
+    config BACKEND_DEVICE_TOKEN
+        string "X-Device-Token"
+        default ""
+        help
+            Per-device HMAC token generated on the backend with
+            python scripts/generate_device_token.py <device_id>. Never enter
+            DEVICE_AUTH_SECRET here.
+
+    config BACKEND_API_TOKEN
+        string "Optional global API bearer token"
+        default ""
+        help
+            Value of backend TOY_API_TOKEN, if configured. Leave empty when
+            the backend does not require the optional global bearer token.
+
+    config BACKEND_TEST_MESSAGE
+        string "One-shot test message"
+        default "你是谁"
+        help
+            Message sent once after Wi-Fi obtains an IPv4 address.
+
+endmenu
