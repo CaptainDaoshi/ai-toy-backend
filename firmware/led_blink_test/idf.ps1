@@ -12,6 +12,7 @@ $stageMain = Join-Path $stageProject "main"
 New-Item -ItemType Directory -Path $stageMain -Force | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "CMakeLists.txt") -Destination $stageProject -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "sdkconfig.defaults") -Destination $stageProject -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\CMakeLists.txt") -Destination $stageMain -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\Kconfig.projbuild") -Destination $stageMain -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\idf_component.yml") -Destination $stageMain -Force
@@ -20,6 +21,10 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\backend_client.c") -Destin
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\backend_client.h") -Destination $stageMain -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\max98357_audio.c") -Destination $stageMain -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\max98357_audio.h") -Destination $stageMain -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\inmp441_audio.c") -Destination $stageMain -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\inmp441_audio.h") -Destination $stageMain -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\oled_display.c") -Destination $stageMain -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "main\oled_display.h") -Destination $stageMain -Force
 
 Write-Host "ESP-IDF staging project: $stageProject"
 

@@ -47,6 +47,117 @@ menu "MAX98357A Audio Test Configuration"
 
 endmenu
 
+menu "INMP441 Voice Capture Configuration"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    config MIC_TEST_WS_GPIO
+        int "I2S word-select GPIO (WS)"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 4
+        help
+            GPIO connected to the INMP441 WS input.
+
+    config MIC_TEST_SCK_GPIO
+        int "I2S serial-clock GPIO (SCK/BCLK)"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 5
+        help
+            GPIO connected to the INMP441 SCK input.
+
+    config MIC_TEST_SD_GPIO
+        int "I2S microphone data GPIO (SD)"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+        default 6
+        help
+            GPIO receiving the INMP441 SD output.
+
+    config MIC_TEST_SAMPLE_RATE_HZ
+        int "Microphone sample rate (Hz; backend requires 16000)"
+        range 16000 16000
+        default 16000
+        help
+            The Vosk transcription endpoint requires 16 kHz mono PCM.
+
+    config MIC_MAX_RECORD_DURATION_SECONDS
+        int "Maximum push-to-talk recording duration (seconds)"
+        range 2 10
+        default 10
+        help
+            Recording starts while the talk button is held and ends when it is
+            released. This limit stops a stuck button from uploading forever.
+
+    config MIC_RECORD_DIGITAL_GAIN
+        int "Microphone digital gain"
+        range 1 16
+        default 4
+        help
+            Gain applied while converting the INMP441 24-bit samples to
+            signed 16-bit PCM. Reduce this if recording peaks reach 32767.
+
+endmenu
+
+menu "Push-to-talk and Power Buttons"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    config TALK_BUTTON_GPIO
+        int "Push-to-talk button GPIO"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+        default 39
+        help
+            Connect a normally-open momentary button between this GPIO and
+            GND. The firmware enables the internal pull-up. Hold to record and
+            release to finish. GPIO39 is also a JTAG pin, so do not use an
+            external JTAG debugger at the same time.
+
+    config POWER_BUTTON_GPIO
+        int "Soft power button GPIO"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+        default 40
+        help
+            Connect a normally-open momentary button between this GPIO and
+            GND. Each press toggles the application between working and soft
+            standby states. GPIO40 cannot physically disconnect board power.
+
+    config BUTTON_DEBOUNCE_MS
+        int "Button debounce time (milliseconds)"
+        range 10 100
+        default 30
+        help
+            Time that a button must remain pressed or released before the
+            change is accepted.
+
+endmenu
+
+menu "0.91-inch SSD1306 OLED Display"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    config OLED_SDA_GPIO
+        int "OLED I2C SDA GPIO"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 41
+        help
+            Connect the four-pin OLED SDA input to this GPIO.
+
+    config OLED_SCL_GPIO
+        int "OLED I2C SCL GPIO"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 42
+        help
+            Connect the OLED pin marked SCL or SCK to this GPIO.
+
+    config OLED_I2C_FREQUENCY_HZ
+        int "OLED I2C clock frequency (Hz)"
+        range 100000 400000
+        default 400000
+        help
+            Most SSD1306 modules support 400 kHz. Select 100000 if long wires
+            or a weak pull-up make the bus unreliable.
+
+endmenu
+
 menu "Wi-Fi Test Configuration"
 
     config WIFI_TEST_SSID
@@ -74,7 +185,7 @@ menu "Backend API and Speech Test Configuration"
 
     config BACKEND_BASE_URL
         string "Backend base URL (no trailing slash)"
-        default "https://68mn1ot67133.vicp.fun"
+        default "https://ni102fd610004.vicp.fun"
         help
             HTTPS origin exposed by the intranet tunnel. Do not include a
             trailing slash because the firmware appends API paths.
@@ -100,11 +211,5 @@ menu "Backend API and Speech Test Configuration"
         help
             Value of backend TOY_API_TOKEN, if configured. Leave empty when
             the backend does not require the optional global bearer token.
-
-    config BACKEND_TEST_MESSAGE
-        string "One-shot test message"
-        default "你是谁"
-        help
-            Message sent once after Wi-Fi obtains an IPv4 address.
 
 endmenu

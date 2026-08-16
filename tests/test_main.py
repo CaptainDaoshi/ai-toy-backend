@@ -1,8 +1,11 @@
 import asyncio
 from array import array
+import io
 import unittest
 from unittest.mock import patch
+import wave
 
+from app.asr import InvalidSpeechAudio, transcribe_wav
 from app.main import ask_model
 from app.tts import SpeechSynthesisUnavailable, synthesize_speech_wav
 
@@ -116,6 +119,40 @@ class SpeechSynthesisTests(unittest.TestCase):
         communicate.return_value = FakeCommunicate()
         with self.assertRaises(SpeechSynthesisUnavailable):
             asyncio.run(synthesize_speech_wav("你好"))
+
+
+class SpeechRecognitionTests(unittest.TestCase):
+    @staticmethod
+    def pcm_wav(sample_rate=16000, channels=1, sample_width=2):
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav_file:
+            wav_file.setnchannels(channels)
+            wav_file.setsampwidth(sample_width)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(b"\x00\x00" * 1600 * channels)
+        return output.getvalue()
+
+    def test_transcribes_and_joins_chinese_characters(self):
+        class FakeRecognizer:
+            def __init__(self, model, sample_rate):
+                self.model = model
+                self.sample_rate = sample_rate
+
+            def AcceptWaveform(self, chunk):
+                return False
+
+            def FinalResult(self):
+                return '{"text":"你 是 谁"}'
+
+        fake_vosk = type("FakeVosk", (), {"KaldiRecognizer": FakeRecognizer})
+        with patch("app.asr._load_model", return_value=object()), patch("app.asr.vosk", fake_vosk):
+            text = transcribe_wav(self.pcm_wav())
+
+        self.assertEqual(text, "你是谁")
+
+    def test_rejects_wrong_sample_rate(self):
+        with self.assertRaises(InvalidSpeechAudio):
+            transcribe_wav(self.pcm_wav(sample_rate=8000))
 
 
 if __name__ == "__main__":

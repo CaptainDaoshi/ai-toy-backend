@@ -3,7 +3,14 @@
 __pycache__/
 *.py[cod]
 
+# Local speech-recognition models are downloaded separately (tens of MB).
+models/vosk-model*/
+
 # ESP-IDF generated files
 firmware/**/build/
 firmware/**/sdkconfig
 firmware/**/sdkconfig.old
+
+# Local board-vendor reference pack and temporary audio samples
+ESP32-S3 资料/
+firmware/**/main/audio_test.wav

@@ -7,11 +7,12 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, Field, validator
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.cors import CORSMiddleware
 
+from app.asr import InvalidSpeechAudio, SpeechRecognitionUnavailable, transcribe_wav
 from app.database import ChatDatabase, DatabaseUnavailable, DeviceModeConflict
 from app.security import verify_device_token
 from app.tts import SpeechSynthesisUnavailable, synthesize_speech_wav
@@ -55,6 +56,9 @@ JSON_EMPTY_RESPONSE_RETRIES = max(
 )
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 TTS_RATE = os.getenv("TTS_RATE", "+0%")
+MAX_TRANSCRIPTION_WAV_BYTES = max(
+    44100, min(1048576, int(os.getenv("MAX_TRANSCRIPTION_WAV_BYTES", "384000")))
+)
 INPUT_CONTEXT_TOKEN_BUDGET = max(
     2048, MODEL_CONTEXT_MAX_TOKENS - MODEL_MAX_OUTPUT_TOKENS - CONTEXT_SAFETY_TOKENS
 )
@@ -141,6 +145,11 @@ class SpeechRequest(BaseModel):
         if not value.strip():
             raise ValueError("must not be blank")
         return value.strip()
+
+
+class TranscriptionResponse(BaseModel):
+    device_id: str
+    text: str
 
 
 class DeviceProfileResponse(BaseModel):
@@ -577,6 +586,54 @@ async def speech(
         media_type="audio/wav",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.post(
+    "/v1/audio/transcriptions",
+    response_model=TranscriptionResponse,
+    dependencies=[Depends(require_token)],
+)
+async def audio_transcription(
+    request: Request,
+    device_id: str = Query(..., min_length=1, max_length=100),
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+):
+    """Recognize a bounded 16 kHz mono PCM WAV uploaded by an authenticated device."""
+    normalized_device_id = device_id.strip()
+    if not normalized_device_id:
+        raise HTTPException(status_code=422, detail="device_id must not be blank")
+    require_device_token(normalized_device_id, x_device_token)
+
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type not in ("audio/wav", "audio/x-wav"):
+        raise HTTPException(status_code=415, detail="Content-Type must be audio/wav")
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_TRANSCRIPTION_WAV_BYTES:
+                raise HTTPException(status_code=413, detail="WAV upload is too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length")
+
+    wav_buffer = bytearray()
+    async for chunk in request.stream():
+        if len(wav_buffer) + len(chunk) > MAX_TRANSCRIPTION_WAV_BYTES:
+            raise HTTPException(status_code=413, detail="WAV upload is too large")
+        wav_buffer.extend(chunk)
+    if not wav_buffer:
+        raise HTTPException(status_code=422, detail="WAV upload is empty")
+
+    try:
+        text = await run_in_threadpool(transcribe_wav, bytes(wav_buffer))
+    except InvalidSpeechAudio as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except SpeechRecognitionUnavailable:
+        raise HTTPException(status_code=503, detail="Speech recognition is unavailable")
+    if not text:
+        raise HTTPException(status_code=422, detail="No speech was recognized; speak closer to the microphone")
+
+    return TranscriptionResponse(device_id=normalized_device_id, text=text)
 
 
 @app.delete("/v1/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT,

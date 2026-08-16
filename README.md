@@ -1,6 +1,6 @@
 # AI 玩具对话后端
 
-面向实体 AI 玩具的最小后端：设备上传文字，服务端保存会话上下文并转发给 DeepSeek。模型密钥只存在于服务器，设备端不需要、也不应该保存它。
+面向实体 AI 玩具的后端：设备既可上传文字，也可上传 16 kHz PCM WAV。服务端先用本地 Vosk 中文模型转写，再保存会话上下文并转发给 DeepSeek，最后把回复合成为设备可播放的 PCM WAV。模型密钥只存在于服务器，设备端不需要、也不应该保存它。
 
 ## 启动后端
 
@@ -12,6 +12,7 @@ python -m venv .venv
 pip install -r requirements.txt
 Copy-Item .env.example .env
 # 编辑 .env，填入你的 DEEPSEEK_API_KEY（或 DEEPSEEK_API_TOKEN）
+# 下载并解压 vosk-model-small-cn-0.22 到 models 目录，见下文
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -19,7 +20,25 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## ESP32-S3 固件测试
 
-ESP32-S3 的 2.4 GHz Wi-Fi、MAX98357A I2S 语音和板载 RGB 状态灯测试工程位于 [`firmware/led_blink_test`](firmware/led_blink_test)。由于当前仓库路径含中文，请按该目录 README 的说明使用 `idf.ps1` 配置、编译和烧录。
+ESP32-S3 的 INMP441 录音、HTTPS 上传、本地语音识别、DeepSeek 对话、MAX98357A 播放和板载 RGB 状态灯测试工程位于 [`firmware/led_blink_test`](firmware/led_blink_test)。由于当前仓库路径含中文，请按该目录 README 的说明使用 `idf.ps1` 配置、编译和烧录。
+
+## 本地中文语音识别
+
+后端使用 `vosk==0.3.45`，兼容当前 Python 3.7 环境。Windows 下 Vosk 的原生 DLL 不能可靠读取包含中文的项目路径，因此模型默认放在纯英文的 `%LOCALAPPDATA%\ai-toy-vosk`，不放进 Git 仓库。首次使用请下载官方的 [`vosk-model-small-cn-0.22.zip`](https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip)，解压后目录结构应为：
+
+```text
+%LOCALAPPDATA%\ai-toy-vosk\vosk-model-small-cn-0.22\am
+%LOCALAPPDATA%\ai-toy-vosk\vosk-model-small-cn-0.22\conf
+%LOCALAPPDATA%\ai-toy-vosk\vosk-model-small-cn-0.22\graph
+```
+
+推荐直接运行仓库内的断点续传脚本；若官方服务器较慢，也可以在浏览器中打开上面的模型链接下载：
+
+```powershell
+.\scripts\download_vosk_model.ps1
+```
+
+默认路径已经写入 `.env.example`。如果模型放在别处，请在 `.env` 设置 `VOSK_MODEL_PATH`。识别完全在后端电脑本地运行，不需要新的云端 API 密钥。
 
 ## 启动测试前端
 
@@ -128,6 +147,7 @@ python scripts/generate_device_token.py device-1
 | GET | `/v1/devices/{device_id}/profile` | 查询设备是否已锁定回复模式 |
 | GET | `/v1/conversations/{conversation_id}/messages?device_id=...` | 分页读取指定设备的历史消息 |
 | POST | `/v1/chat/completions` | 发送一句话并取得回复 |
+| POST | `/v1/audio/transcriptions?device_id=...` | 上传 16 kHz、16 位、单声道 PCM WAV 并转为文字 |
 | POST | `/v1/speech` | 把回复文字合成为单声道 PCM WAV |
 | DELETE | `/v1/conversations/{conversation_id}?device_id=...` | 清除指定设备的一段会话记忆 |
 
